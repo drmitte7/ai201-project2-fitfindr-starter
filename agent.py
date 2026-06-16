@@ -18,7 +18,18 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+#from tools import search_listings, suggest_outfit, create_fit_card
+
 from tools import search_listings, suggest_outfit, create_fit_card
+from groq import Groq
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+def _get_groq_client():
+    api_key = os.environ.get("GROQ_API_KEY")
+    return Groq(api_key=api_key)
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -93,8 +104,77 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     of planning.md — your implementation should match what you described there.
     """
     # TODO: implement the planning loop
+    #session = _new_session(query, wardrobe)
+    #session["error"] = "Planning loop not yet implemented."
+    #return session
+
+    # Step 1: Initialize session
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+    
+    # Step 2: Parse the query using the LLM
+    client = _get_groq_client()
+    parse_prompt = f"""Extract search parameters from this user query.
+Query: "{query}"
+
+Respond in this exact format with nothing else:
+description: <what item they want>
+size: <size if mentioned, or None>
+max_price: <number if mentioned, or None>"""
+
+    parse_response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": parse_prompt}],
+        max_tokens=100
+    )
+    
+    parse_text = parse_response.choices[0].message.content
+    
+    # Extract parsed values
+    description = query  # fallback
+    size = None
+    max_price = None
+    
+    for line in parse_text.strip().split("\n"):
+        if line.startswith("description:"):
+            description = line.split(":", 1)[1].strip()
+        elif line.startswith("size:") and "None" not in line:
+            size = line.split(":", 1)[1].strip()
+        elif line.startswith("max_price:") and "None" not in line:
+            try:
+                max_price = float(line.split(":", 1)[1].strip())
+            except ValueError:
+                max_price = None
+    
+    session["parsed"] = {
+        "description": description,
+        "size": size,
+        "max_price": max_price
+    }
+    
+    # Step 3: Call search_listings
+    results = search_listings(description, size, max_price)
+    session["search_results"] = results
+    
+    if not results:
+        session["error"] = "No listings matched your search. Try a broader description, a different size, or a higher price limit."
+        return session
+    
+    # Step 4: Select top result
+    session["selected_item"] = results[0]
+    
+    # Step 5: Call suggest_outfit
+    outfit = suggest_outfit(session["selected_item"], session["wardrobe"])
+    session["outfit_suggestion"] = outfit
+    
+    if not outfit or not outfit.strip():
+        session["error"] = "Could not generate outfit suggestions. Please try again."
+        return session
+    
+    # Step 6: Call create_fit_card
+    fit_card = create_fit_card(session["outfit_suggestion"], session["selected_item"])
+    session["fit_card"] = fit_card
+    
+    # Step 7: Return completed session
     return session
 
 
